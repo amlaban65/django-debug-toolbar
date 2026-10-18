@@ -1,5 +1,7 @@
 import cProfile
 import os
+import sys
+import threading
 from colorsys import hsv_to_rgb
 from pstats import Stats
 
@@ -147,6 +149,12 @@ class FunctionCall:
         }
 
 
+# Since Python 3.12, cProfile uses sys.monitoring, which allows only one active
+# profiler per process. Starting a second one for an overlapping request raises
+# ValueError, so concurrent requests take turns and the losers aren't profiled.
+_profiler_lock = threading.Lock() if sys.version_info >= (3, 12) else None
+
+
 class ProfilingPanel(Panel):
     """
     Panel that displays profiling information.
@@ -160,8 +168,15 @@ class ProfilingPanel(Panel):
     capture_project_code = dt_settings.get_config()["PROFILER_CAPTURE_PROJECT_CODE"]
 
     def process_request(self, request):
-        self.profiler = cProfile.Profile()
-        return self.profiler.runcall(super().process_request, request)
+        if _profiler_lock and not _profiler_lock.acquire(blocking=False):
+            self.profiling_skipped = True
+            return super().process_request(request)
+        try:
+            self.profiler = cProfile.Profile()
+            return self.profiler.runcall(super().process_request, request)
+        finally:
+            if _profiler_lock:
+                _profiler_lock.release()
 
     def add_node(self, func_list, func, max_depth, cum_time):
         func_list.append(func)
@@ -177,6 +192,9 @@ class ProfilingPanel(Panel):
                     self.add_node(func_list, subfunc, max_depth, cum_time)
 
     def generate_stats(self, request, response):
+        if getattr(self, "profiling_skipped", False):
+            self.record_stats({"skipped": True})
+            return
         if not hasattr(self, "profiler"):
             return
         # Could be delayed until the panel content is requested (perf. optim.)

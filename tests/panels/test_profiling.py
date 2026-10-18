@@ -1,4 +1,5 @@
 import sys
+import threading
 import unittest
 
 from django.contrib.auth.models import User
@@ -7,8 +8,9 @@ from django.http import HttpResponse
 from django.test.utils import override_settings
 
 from debug_toolbar.panels.profiling import ProfilingPanel
+from debug_toolbar.toolbar import DebugToolbar
 
-from ..base import BaseTestCase, IntegrationTestCase
+from ..base import BaseTestCase, IntegrationTestCase, rf
 from ..views import listcomp_view, regular_view
 
 
@@ -76,6 +78,47 @@ class ProfilingPanelTestCase(BaseTestCase):
         """
         response = HttpResponse()
         self.assertIsNone(self.panel.generate_stats(self.request, response))
+
+    @unittest.skipIf(
+        sys.version_info < (3, 12), "only one profiler at a time since 3.12"
+    )
+    def test_overlapping_request_is_not_profiled(self):
+        """
+        A request that overlaps one already being profiled runs its view once,
+        unprofiled, instead of raising ValueError from cProfile.
+        """
+        in_view = threading.Event()
+        release = threading.Event()
+        errors = []
+
+        def slow_view(request):
+            in_view.set()
+            release.wait(5)
+            return HttpResponse()
+
+        def first_request():
+            toolbar = DebugToolbar(rf.get("/"), slow_view)
+            try:
+                toolbar.get_panel_by_id(self.panel_id).process_request(toolbar.request)
+            except ValueError as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=first_request)
+        thread.start()
+        try:
+            self.assertTrue(in_view.wait(5))
+            calls = []
+            self._get_response = lambda request: calls.append(request) or HttpResponse()
+            response = self.panel.process_request(self.request)
+        finally:
+            release.set()
+            thread.join(5)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(calls), 1)
+        self.panel.generate_stats(self.request, response)
+        self.assertEqual(self.panel.get_stats(), {"skipped": True})
+        self.assertIn("was not profiled", self.panel.content)
 
     def test_generate_stats_no_root_func(self):
         """

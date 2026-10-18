@@ -1,4 +1,7 @@
 {% load i18n %}
+{% if skipped %}
+  <p>{% translate "This request was not profiled because another request was being profiled at the same time." %}</p>
+{% endif %}
 <table>
   <thead>
     <tr>

@@ -31,6 +31,9 @@ Pending
 * ``Panel.get_headers()`` now returns a ``PanelHeaders`` instance with
   separate ``append`` and ``update`` dictionaries instead of a ``dict``.
   Third-party panels overriding it need to be updated.
+* Fixed the Profiling panel raising ``ValueError`` on Python 3.12+ when
+  requests overlap. A request that starts while another is being profiled
+  now runs without profiling and the panel says so.
 * Fixed the SQL panel's Explain action returning a 500 on databases that
   don't support ``EXPLAIN``. It now shows an error instead.
 * Added open in editor functionality to templates panel using ``EDITOR``
